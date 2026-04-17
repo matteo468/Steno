@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Steno — Patrimonio</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0a0f; color: #e0e0e0; padding: 32px; }
+  .header { margin-bottom: 40px; }
+  .header h1 { font-size: 28px; color: #fff; margin-bottom: 4px; }
+  .header p { color: #888; font-size: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 40px; }
+  .card { background: #16161f; border-radius: 12px; padding: 20px; border: 1px solid #2a2a3a; }
+  .card .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .card .value { font-size: 24px; font-weight: 700; color: #fff; }
+  .card .sub { font-size: 13px; color: #9b59b6; margin-top: 4px; }
+  .card.highlight { border-color: #5b2e6f; background: linear-gradient(135deg, #1a1028, #16161f); }
+  .card.highlight .value { color: #d5b8ff; }
+  .chart-container { background: #16161f; border-radius: 12px; padding: 24px; border: 1px solid #2a2a3a; margin-bottom: 24px; }
+  .chart-container h2 { font-size: 16px; color: #ccc; margin-bottom: 16px; font-weight: 500; }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .chart-row .chart-container { margin-bottom: 0; }
+  canvas { max-height: 340px; }
+  .timeline { display: flex; gap: 0; margin-bottom: 40px; position: relative; }
+  .timeline::before { content: ''; position: absolute; top: 12px; left: 0; right: 0; height: 2px; background: #2a2a3a; }
+  .event { flex: 1; text-align: center; position: relative; padding-top: 28px; }
+  .event::before { content: ''; width: 10px; height: 10px; background: #5b2e6f; border-radius: 50%; position: absolute; top: 7px; left: 50%; transform: translateX(-50%); }
+  .event .date { font-size: 11px; color: #9b59b6; font-weight: 600; }
+  .event .desc { font-size: 11px; color: #888; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Steno — Modello Finanziario</h1>
+  <p>Simulazione patrimonio dal luglio 2018 ad aprile 2026</p>
+</div>
+
+<div class="timeline">
+  <div class="event"><div class="date">Lug 2018</div><div class="desc">Incidente</div></div>
+  <div class="event"><div class="date">Dic 2019</div><div class="desc">130k investiti</div></div>
+  <div class="event"><div class="date">Apr 2021</div><div class="desc">Inizio lavoro</div></div>
+  <div class="event"><div class="date">Gen 2022</div><div class="desc">Rata macchina</div></div>
+  <div class="event"><div class="date">Lug 2025</div><div class="desc">Aumento stipendio</div></div>
+  <div class="event"><div class="date">Feb 2026</div><div class="desc">Fine rata</div></div>
+  <div class="event"><div class="date">Apr 2026</div><div class="desc">Oggi</div></div>
+</div>
+
+<div id="cards" class="cards"></div>
+
+<div class="chart-container">
+  <h2>Composizione Patrimonio nel Tempo</h2>
+  <canvas id="stackedArea"></canvas>
+</div>
+
+<div class="chart-row">
+  <div class="chart-container">
+    <h2>Crescita dei 3 Fondi Intesa</h2>
+    <canvas id="fundsLine"></canvas>
+  </div>
+  <div class="chart-container">
+    <h2>Saldo Mensile Netto</h2>
+    <canvas id="monthlyBar"></canvas>
+  </div>
+</div>
+
+<script>
+// ── Assumptions ──
+const INCIDENT = new Date(2018, 6, 1);
+const INVEST_DATE = new Date(2019, 11, 1);
+const JOB_START = new Date(2021, 3, 1);
+const RATA_START = new Date(2022, 0, 1);
+const RATA_END = new Date(2026, 1, 1);
+const SALARY_UP = new Date(2025, 6, 1);
+
+const LUMP = 130000;
+const ALLOC = { cons: 100/350, bil: 100/350, agg: 150/350 };
+const RATES = { cons: 0.01, bil: 0.04, agg: 0.06 };
+
+const SAL_LOW = 1500, SAL_HIGH = 1750;
+const PAC_LOW = 200, PAC_HIGH = 350;
+const RATA = 300;
+const EXPENSES = 200 + 200 + 150 + 2500/12; // fumo + svago + benzina + vacanze
+
+// ── Build monthly data ──
+const months = [];
+let d = new Date(2018, 6, 1); // Start from incident
+const end = new Date(2026, 3, 1);
+while (d <= end) {
+  months.push(new Date(d));
+  d.setMonth(d.getMonth() + 1);
+}
+
+let cons = 0, bil = 0, agg = 0, cash = 0, pac_cum = 0;
+const data = { labels: [], patrimonio: [], funds: [], pac: [], cashArr: [],
+               consArr: [], bilArr: [], aggArr: [], netMonthly: [] };
+
+for (const m of months) {
+  const label = m.toLocaleDateString('it-IT', { month: 'short', year: '2-digit' });
+  data.labels.push(label);
+
+  const invested = m >= INVEST_DATE;
+  const hasJob = m >= JOB_START;
+  const hasRata = m >= RATA_START && m <= RATA_END;
+  const highSal = m >= SALARY_UP;
+  const highPac = m >= SALARY_UP;
+
+  // Funds growth
+  if (invested) {
+    if (cons === 0) { cons = LUMP * ALLOC.cons; bil = LUMP * ALLOC.bil; agg = LUMP * ALLOC.agg; }
+    else { cons *= (1 + RATES.cons/12); bil *= (1 + RATES.bil/12); agg *= (1 + RATES.agg/12); }
+  }
+
+  // Income & expenses
+  let salary = 0, expenses = 0, rata = 0, pac = 0;
+  if (hasJob) {
+    salary = highSal ? SAL_HIGH : SAL_LOW;
+    expenses = EXPENSES;
+    pac = highPac ? PAC_HIGH : PAC_LOW;
+  }
+  if (hasRata) rata = RATA;
+
+  const net = salary - expenses - rata - pac;
+  cash += net;
+  pac_cum += pac;
+
+  data.consArr.push(Math.round(cons));
+  data.bilArr.push(Math.round(bil));
+  data.aggArr.push(Math.round(agg));
+  data.funds.push(Math.round(cons + bil + agg));
+  data.pac.push(Math.round(pac_cum));
+  data.cashArr.push(Math.round(cash));
+  data.patrimonio.push(Math.round(cons + bil + agg + pac_cum + cash));
+  data.netMonthly.push(Math.round(net));
+}
+
+// ── Cards ──
+const last = data.patrimonio.length - 1;
+const cardsHTML = `
+  <div class="card highlight">
+    <div class="label">Patrimonio Totale</div>
+    <div class="value">€${data.patrimonio[last].toLocaleString('it-IT')}</div>
+    <div class="sub">+€${(data.patrimonio[last] - LUMP).toLocaleString('it-IT')} dal 2018</div>
+  </div>
+  <div class="card">
+    <div class="label">Fondi Intesa</div>
+    <div class="value">€${data.funds[last].toLocaleString('it-IT')}</div>
+    <div class="sub">+${((data.funds[last]/LUMP - 1)*100).toFixed(1)}% rendimento</div>
+  </div>
+  <div class="card">
+    <div class="label">PAC Cumulato</div>
+    <div class="value">€${data.pac[last].toLocaleString('it-IT')}</div>
+    <div class="sub">${Math.round(data.pac[last]/PAC_LOW)} mesi di versamenti</div>
+  </div>
+  <div class="card">
+    <div class="label">Cash Disponibile</div>
+    <div class="value">€${data.cashArr[last].toLocaleString('it-IT')}</div>
+    <div class="sub">+€${data.netMonthly[last].toLocaleString('it-IT')}/mese attuale</div>
+  </div>
+`;
+document.getElementById('cards').innerHTML = cardsHTML;
+
+// ── Chart defaults ──
+Chart.defaults.color = '#888';
+Chart.defaults.borderColor = '#2a2a3a';
+Chart.defaults.font.family = 'Inter, -apple-system, sans-serif';
+
+// ── Chart 1: Stacked Area ──
+new Chart(document.getElementById('stackedArea'), {
+  type: 'line',
+  data: {
+    labels: data.labels,
+    datasets: [
+      { label: 'Fondi Intesa', data: data.funds, fill: true, backgroundColor: 'rgba(91,46,111,0.6)', borderColor: '#5b2e6f', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+      { label: 'PAC Cumulato', data: data.pac, fill: true, backgroundColor: 'rgba(155,89,182,0.4)', borderColor: '#9b59b6', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+      { label: 'Cash', data: data.cashArr, fill: true, backgroundColor: 'rgba(213,184,255,0.3)', borderColor: '#d5b8ff', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+    ]
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: { ticks: { maxTicksLimit: 12, font: { size: 10 } }, grid: { display: false } },
+      y: { stacked: true, ticks: { callback: v => '€' + (v/1000).toFixed(0) + 'k' }, grid: { color: '#1e1e2e' } }
+    },
+    plugins: {
+      tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': €' + ctx.parsed.y.toLocaleString('it-IT') } },
+      legend: { position: 'bottom', labels: { boxWidth: 12, padding: 20 } }
+    }
+  }
+});
+
+// ── Chart 2: Funds Line ──
+new Chart(document.getElementById('fundsLine'), {
+  type: 'line',
+  data: {
+    labels: data.labels,
+    datasets: [
+      { label: 'Conservativo (1%)', data: data.consArr, borderColor: '#3498db', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+      { label: 'Bilanciato (4%)', data: data.bilArr, borderColor: '#9b59b6', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+      { label: 'Aggressivo (6%)', data: data.aggArr, borderColor: '#e74c3c', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+    ]
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: { ticks: { maxTicksLimit: 8, font: { size: 10 } }, grid: { display: false } },
+      y: { ticks: { callback: v => '€' + (v/1000).toFixed(0) + 'k' }, grid: { color: '#1e1e2e' } }
+    },
+    plugins: {
+      tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': €' + ctx.parsed.y.toLocaleString('it-IT') } },
+      legend: { position: 'bottom', labels: { boxWidth: 12, padding: 16, font: { size: 10 } } }
+    }
+  }
+});
+
+// ── Chart 3: Monthly Net Bar ──
+const barColors = data.netMonthly.map(v => v >= 0 ? 'rgba(91,46,111,0.7)' : 'rgba(231,76,60,0.7)');
+new Chart(document.getElementById('monthlyBar'), {
+  type: 'bar',
+  data: {
+    labels: data.labels,
+    datasets: [{ label: 'Saldo Mensile', data: data.netMonthly, backgroundColor: barColors, borderRadius: 2 }]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      x: { ticks: { maxTicksLimit: 8, font: { size: 10 } }, grid: { display: false } },
+      y: { ticks: { callback: v => '€' + v }, grid: { color: '#1e1e2e' } }
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: ctx => '€' + ctx.parsed.y.toLocaleString('it-IT') + '/mese' } }
+    }
+  }
+});
+</script>
+</body>
+</html>
